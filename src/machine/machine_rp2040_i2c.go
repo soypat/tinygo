@@ -5,6 +5,7 @@ package machine
 import (
 	"device/rp"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -229,7 +230,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err 
 			fallthrough
 		default:
 			// panic("unknown i2c abortReason:" + strconv.Itoa(abortReason)
-			err = buffError(byteCtr)
+			err = makeI2CBuffError(byteCtr)
 		}
 	}
 
@@ -289,7 +290,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline time.Time) (err 
 			err = errI2CGeneric
 		default:
 			// undefined abort sequence
-			err = buffError(byteCtr)
+			err = makeI2CBuffError(byteCtr)
 		}
 	}
 
@@ -311,14 +312,15 @@ func (i2c *I2C) readAvailable() uint32 {
 	return i2c.Bus.IC_RXFLR.Get()
 }
 
-// type i2cBuffError int
+type i2cBuffError int
 
-// func (b i2cBuffError) Error() string {
-// 	return "i2c err after addr ack at data " + strconv.Itoa(int(b))
-// }
+func (b i2cBuffError) Error() string {
+	return "i2c err after addr ack at data " + strconv.Itoa(int(b))
+}
 
-func buffError(idx int) error {
-	return errors.New("i2c buffer")
+//go:inline
+func makeI2CBuffError(idx int) error {
+	return i2cBuffError(idx)
 }
 
 //go:inline
