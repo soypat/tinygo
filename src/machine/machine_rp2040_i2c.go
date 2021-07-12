@@ -6,7 +6,7 @@ import (
 	"device/rp"
 	"errors"
 	"strconv"
-	"time"
+	
 )
 
 // I2CConfig is used to store config info for I2C.
@@ -39,13 +39,13 @@ var (
 // Performs only a write transfer.
 func (i2c *I2C) Tx(addr uint16, w, r []byte) error {
 	if len(w) > 0 {
-		if err := i2c.tx(uint8(addr), w, false, time.Time{}); nil != err {
+		if err := i2c.tx(uint8(addr), w, false, 0); nil != err {
 			return err
 		}
 	}
 
 	if len(r) > 0 {
-		if err := i2c.rx(uint8(addr), r, false, time.Time{}); nil != err {
+		if err := i2c.rx(uint8(addr), r, false, 0); nil != err {
 			return err
 		}
 	}
@@ -59,6 +59,7 @@ func (i2c *I2C) Configure(config I2CConfig) error {
 
 // SetBaudrate sets the I2C frequency. It has the side effect of also
 // enabling the I2C hardware if disabled beforehand.
+//go:inline
 func (i2c *I2C) SetBaudrate(br uint32) error {
 	var freqin uint32 = 125 * MHz
 	// Find smallest prescale value which puts o
@@ -116,6 +117,7 @@ func (i2c *I2C) disable() {
 	// i2c.Bus.IC_ENABLE.ReplaceBits(rp.I2C0_IC_ENABLE_ENABLE_DISABLED, rp.I2C0_IC_ENABLE_ENABLE_Msk, rp.I2C0_IC_ENABLE_ENABLE_Pos)
 }
 
+//go:inline
 func (i2c *I2C) init(config I2CConfig) error {
 	i2c.reset()
 	i2c.disable()
@@ -156,7 +158,7 @@ func (i2c *I2C) deinit() (resetVal uint32) {
 	return resetVal
 }
 
-func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err error) {
+func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error) {
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
 		return errInvalidTgtAddr
 	}
@@ -170,7 +172,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err 
 	i2c.Bus.IC_TAR.Set(uint32(addr))
 	i2c.enable()
 	// If no timeout was passed timeoutCheck is false.
-	timeoutCheck := !deadline.Equal(time.Time{})
+	timeoutCheck := timeout != 0
 	abort := false
 	var abortReason uint32
 	byteCtr := 0
@@ -186,7 +188,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err 
 		// TX_EMPTY_CTRL flag in IC_CON must be set. The TX_EMPTY_CTRL flag
 		// was set in i2c_init.
 		for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_TX_EMPTY != 0 {
-			if timeoutCheck && time.Since(deadline) > 0 {
+			if timeoutCheck {//&& time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
 				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
 			}
@@ -208,7 +210,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err 
 			// condition here? If so, additional code would be needed here
 			// to take care of the abort.
 			for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_STOP_DET != 0 {
-				if timeoutCheck && time.Since(deadline) > 0 {
+				if timeoutCheck {//} && time.Since(deadline) > 0 {
 					i2c.restartOnNext = nostop
 					return errI2CTimeout
 				}
@@ -239,7 +241,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, deadline time.Time) (err 
 	return err
 }
 
-func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline time.Time) (err error) {
+func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline int64) (err error) {
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
 		return errInvalidTgtAddr
 	}
@@ -252,7 +254,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline time.Time) (err 
 	i2c.Bus.IC_TAR.Set(uint32(addr))
 	i2c.enable()
 	// If no timeout was passed timeoutCheck is false.
-	timeoutCheck := !deadline.Equal(time.Time{})
+	timeoutCheck := deadline == 0 // !deadline.Equal(time.Time{})
 	abort := false
 	var abortReason uint32
 	byteCtr := 0
@@ -271,7 +273,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline time.Time) (err 
 			if abortReason != 0 {
 				abort = true
 			}
-			if timeoutCheck && time.Since(deadline) > 0 {
+			if timeoutCheck {//} && time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
 				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
 			}
