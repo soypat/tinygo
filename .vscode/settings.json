@@ -1,0 +1,6 @@
+{
+    "go.toolsEnvVars": {
+        // "GOROOT": "/home/pato/.cache/tinygo/goroot-go1.16.5-8fe0d8617ff62fb1c3564d32811d06591554a153d9036c433653cf57af426a28-syscall",
+        "GOFLAGS": "-tags=rp2040,rp,cortexm,baremetal,linux,arm,tinygo,gc.conservative,scheduler.tasks,serial.none"
+    }
+}

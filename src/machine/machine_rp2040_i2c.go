@@ -6,7 +6,6 @@ import (
 	"device/rp"
 	"errors"
 	"strconv"
-	
 )
 
 // I2CConfig is used to store config info for I2C.
@@ -131,18 +130,22 @@ func (i2c *I2C) init(config I2CConfig) error {
 	i2c.Bus.IC_TX_TL.Set(0)
 	i2c.Bus.IC_RX_TL.Set(0)
 
-	// Always enable the DREQ signalling -- harmless if DMA isn't listening
-	i2c.Bus.IC_DMA_CR.Set(rp.I2C0_IC_DMA_CR_TDMAE | rp.I2C0_IC_DMA_CR_RDMAE)
+	i2c.Bus.
+
+		// Always enable the DREQ signalling -- harmless if DMA isn't listening
+		i2c.Bus.IC_DMA_CR.Set(rp.I2C0_IC_DMA_CR_TDMAE | rp.I2C0_IC_DMA_CR_RDMAE)
 	return i2c.SetBaudrate(config.Frequency)
 }
 
 func (i2c *I2C) reset() {
 	resetVal := i2c.deinit()
+	rp.RESETS.RESET.ClearBits(resetVal)
 	// Wait until reset is done.
 	for !rp.RESETS.RESET_DONE.HasBits(resetVal) {
 	}
 }
 
+// deinit sets reset bit for I2C. Must call reset to reenable I2C after deinit.
 //go:inline
 func (i2c *I2C) deinit() (resetVal uint32) {
 	switch {
@@ -153,7 +156,6 @@ func (i2c *I2C) deinit() (resetVal uint32) {
 	}
 	// Perform I2C reset.
 	rp.RESETS.RESET.SetBits(resetVal)
-	rp.RESETS.RESET.ClearBits(resetVal)
 
 	return resetVal
 }
@@ -188,7 +190,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error
 		// TX_EMPTY_CTRL flag in IC_CON must be set. The TX_EMPTY_CTRL flag
 		// was set in i2c_init.
 		for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_TX_EMPTY != 0 {
-			if timeoutCheck {//&& time.Since(deadline) > 0 {
+			if timeoutCheck { //&& time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
 				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
 			}
@@ -210,7 +212,7 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error
 			// condition here? If so, additional code would be needed here
 			// to take care of the abort.
 			for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_STOP_DET != 0 {
-				if timeoutCheck {//} && time.Since(deadline) > 0 {
+				if timeoutCheck { //} && time.Since(deadline) > 0 {
 					i2c.restartOnNext = nostop
 					return errI2CTimeout
 				}
@@ -273,7 +275,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline int64) (err erro
 			if abortReason != 0 {
 				abort = true
 			}
-			if timeoutCheck {//} && time.Since(deadline) > 0 {
+			if timeoutCheck { //} && time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
 				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
 			}
