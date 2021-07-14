@@ -21,7 +21,6 @@ type I2C struct {
 var (
 	errInvalidI2CBaudrate = errors.New("invalid i2c baudrate")
 	errInvalidTgtAddr     = errors.New("invalid target i2c address not in 0..0x80 or is reserved")
-	errI2CTimeout         = errors.New("i2c timeout")
 	errI2CGeneric         = errors.New("i2c error")
 )
 
@@ -91,15 +90,16 @@ func (i2c *I2C) SetBaudrate(br uint32) error {
 		return errInvalidI2CBaudrate
 	}
 	i2c.disable()
-	i2c.Bus.IC_ENABLE.Set(rp.I2C0_IC_ENABLE_ENABLE_DISABLED)
+
 	// Always use "fast" mode (<= 400 kHz, works fine for standard mode too)
-	i2c.Bus.IC_CON.ReplaceBits(rp.I2C0_IC_CON_SPEED_FAST, rp.I2C0_IC_CON_SPEED_Msk, rp.I2C0_IC_CON_SPEED_Pos)
+
+	i2c.Bus.IC_CON.ReplaceBits(rp.I2C0_IC_CON_SPEED_FAST<<rp.I2C0_IC_CON_SPEED_Pos, rp.I2C0_IC_CON_SPEED_Msk, 0)
 	i2c.Bus.IC_FS_SCL_HCNT.Set(hcnt)
 	i2c.Bus.IC_FS_SCL_LCNT.Set(lcnt)
 
-	i2c.Bus.IC_FS_SPKLEN.Set(umax32(1, lcnt/16))
+	i2c.Bus.IC_FS_SPKLEN.Set(u32max(1, lcnt/16))
 
-	i2c.Bus.IC_SDA_HOLD.ReplaceBits(sdaTxHoldCnt, rp.I2C0_IC_SDA_HOLD_IC_SDA_RX_HOLD_Msk, rp.I2C0_IC_SDA_HOLD_IC_SDA_RX_HOLD_Pos)
+	i2c.Bus.IC_SDA_HOLD.ReplaceBits(sdaTxHoldCnt<<rp.I2C0_IC_SDA_HOLD_IC_SDA_TX_HOLD_Pos, rp.I2C0_IC_SDA_HOLD_IC_SDA_TX_HOLD_Msk, 0)
 	i2c.enable()
 	return nil
 }
@@ -107,13 +107,13 @@ func (i2c *I2C) SetBaudrate(br uint32) error {
 //go:inline
 func (i2c *I2C) enable() {
 	i2c.Bus.IC_ENABLE.Set(1)
-	// i2c.Bus.IC_ENABLE.ReplaceBits(rp.I2C0_IC_ENABLE_ENABLE, rp.I2C0_IC_ENABLE_ENABLE_Msk, rp.I2C0_IC_ENABLE_ENABLE_Pos)
+	// i2c.Bus.IC_ENABLE.ReplaceBits(rp.I2C0_IC_ENABLE_ENABLE<<rp.I2C0_IC_ENABLE_ENABLE_Pos, rp.I2C0_IC_ENABLE_ENABLE_Msk, 0)
 }
 
 //go:inline
 func (i2c *I2C) disable() {
 	i2c.Bus.IC_ENABLE.Set(0)
-	// i2c.Bus.IC_ENABLE.ReplaceBits(rp.I2C0_IC_ENABLE_ENABLE_DISABLED, rp.I2C0_IC_ENABLE_ENABLE_Msk, rp.I2C0_IC_ENABLE_ENABLE_Pos)
+	// i2c.Bus.IC_ENABLE.ReplaceBits(rp.I2C0_IC_ENABLE_ENABLE_DISABLED<<rp.I2C0_IC_ENABLE_ENABLE_Pos, rp.I2C0_IC_ENABLE_ENABLE_Msk, 0)
 }
 
 //go:inline
@@ -130,13 +130,13 @@ func (i2c *I2C) init(config I2CConfig) error {
 	i2c.Bus.IC_TX_TL.Set(0)
 	i2c.Bus.IC_RX_TL.Set(0)
 
-	i2c.Bus.
-
-		// Always enable the DREQ signalling -- harmless if DMA isn't listening
-		i2c.Bus.IC_DMA_CR.Set(rp.I2C0_IC_DMA_CR_TDMAE | rp.I2C0_IC_DMA_CR_RDMAE)
+	// Always enable the DREQ signalling -- harmless if DMA isn't listening
+	i2c.Bus.IC_DMA_CR.Set(rp.I2C0_IC_DMA_CR_TDMAE | rp.I2C0_IC_DMA_CR_RDMAE)
 	return i2c.SetBaudrate(config.Frequency)
 }
 
+// reset sets I2C register RESET bits in the reset peripheral and then clears them.
+//go:inline
 func (i2c *I2C) reset() {
 	resetVal := i2c.deinit()
 	rp.RESETS.RESET.ClearBits(resetVal)
@@ -181,27 +181,26 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error
 	for ; byteCtr < tlen; byteCtr++ {
 		first := byteCtr == 0
 		last := byteCtr == tlen-1
+
 		i2c.Bus.IC_DATA_CMD.Set(
 			boolToBit(first && i2c.restartOnNext)<<rp.I2C0_IC_DATA_CMD_RESTART_Pos |
 				boolToBit(last && !nostop)<<rp.I2C0_IC_DATA_CMD_STOP_Pos |
 				uint32(tx[byteCtr]))
+
 		// Wait until the transmission of the address/data from the internal
 		// shift register has completed. For this to function correctly, the
 		// TX_EMPTY_CTRL flag in IC_CON must be set. The TX_EMPTY_CTRL flag
 		// was set in i2c_init.
-		for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_TX_EMPTY != 0 {
+		for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_TX_EMPTY == 0 {
 			if timeoutCheck { //&& time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
-				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
+				return errI2CWriteTimeout // If there was a timeout, don't attempt to do anything else.
 			}
 		}
 
-		abortReason = i2c.Bus.IC_TX_ABRT_SOURCE.Get()
+		abortReason = i2c.getAbortReason()
 		if abortReason != 0 {
-			// Note clearing the abort flag also clears the reason, and
-			// this instance of flag is clear-on-read! Note also the
-			// IC_CLR_TX_ABRT register always reads as 0.
-			i2c.Bus.IC_CLR_TX_ABRT.Get()
+			i2c.clearAbortReason()
 			abort = true
 		}
 		if abort || (last && !nostop) {
@@ -211,10 +210,10 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error
 			// TODO Could there be an abort while waiting for the STOP
 			// condition here? If so, additional code would be needed here
 			// to take care of the abort.
-			for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_STOP_DET != 0 {
+			for i2c.Bus.IC_RAW_INTR_STAT.Get()&rp.I2C0_IC_RAW_INTR_STAT_STOP_DET == 0 {
 				if timeoutCheck { //} && time.Since(deadline) > 0 {
 					i2c.restartOnNext = nostop
-					return errI2CTimeout
+					return errI2CWriteTimeout
 				}
 			}
 			i2c.Bus.IC_CLR_STOP_DET.Get()
@@ -243,7 +242,8 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout int64) (err error
 	return err
 }
 
-func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline int64) (err error) {
+//go:inline
+func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, timeout int64) (err error) {
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
 		return errInvalidTgtAddr
 	}
@@ -256,7 +256,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline int64) (err erro
 	i2c.Bus.IC_TAR.Set(uint32(addr))
 	i2c.enable()
 	// If no timeout was passed timeoutCheck is false.
-	timeoutCheck := deadline == 0 // !deadline.Equal(time.Time{})
+	timeoutCheck := timeout != 0 // !deadline.Equal(time.Time{})
 	abort := false
 	var abortReason uint32
 	byteCtr := 0
@@ -268,16 +268,17 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, deadline int64) (err erro
 		i2c.Bus.IC_DATA_CMD.Set(
 			boolToBit(first && i2c.restartOnNext)<<rp.I2C0_IC_DATA_CMD_RESTART_Pos |
 				boolToBit(last && !nostop)<<rp.I2C0_IC_DATA_CMD_STOP_Pos |
-				rp.I2C0_IC_DATA_CMD_CMD)
+				rp.I2C0_IC_DATA_CMD_CMD) // -> 1 for read
 
-		for i2c.readAvailable() == 0 && !abort {
-			abortReason = i2c.Bus.IC_TX_ABRT_SOURCE.Get()
+		for !abort && i2c.readAvailable() == 0 {
+			abortReason = i2c.getAbortReason()
+			i2c.clearAbortReason()
 			if abortReason != 0 {
 				abort = true
 			}
 			if timeoutCheck { //} && time.Since(deadline) > 0 {
 				i2c.restartOnNext = nostop
-				return errI2CTimeout // If there was a timeout, don't attempt to do anything else.
+				return errI2CReadTimeout // If there was a timeout, don't attempt to do anything else.
 			}
 		}
 		if abort {
@@ -316,6 +317,20 @@ func (i2c *I2C) readAvailable() uint32 {
 	return i2c.Bus.IC_RXFLR.Get()
 }
 
+// Equivalent to IC_CLR_TX_ABRT.Get() (side effect clears ABORT_REASON)
+//go:inline
+func (i2c *I2C) clearAbortReason() {
+	// Note clearing the abort flag also clears the reason, and
+	// this instance of flag is clear-on-read! Note also the
+	// IC_CLR_TX_ABRT register always reads as 0.
+	i2c.Bus.IC_CLR_TX_ABRT.Get()
+}
+
+//go:inline
+func (i2c *I2C) getAbortReason() uint32 {
+	return i2c.Bus.IC_TX_ABRT_SOURCE.Get()
+}
+
 type i2cBuffError int
 
 func (b i2cBuffError) Error() string {
@@ -336,7 +351,7 @@ func boolToBit(a bool) uint32 {
 }
 
 //go:inline
-func umax32(a, b uint32) uint32 {
+func u32max(a, b uint32) uint32 {
 	if a > b {
 		return a
 	}
