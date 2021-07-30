@@ -114,3 +114,9 @@ func init() {
 	UART0.Interrupt = interrupt.New(rp.IRQ_UART0_IRQ, _UART0.handleInterrupt)
 	UART1.Interrupt = interrupt.New(rp.IRQ_UART1_IRQ, _UART1.handleInterrupt)
 }
+
+// returns the core number of the caller. For rp2040 can
+// be 0 or 1.
+func coreNumber() uint32 {
+	return rp.SIO.CPUID.Get()
+}
