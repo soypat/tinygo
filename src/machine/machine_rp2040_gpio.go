@@ -171,3 +171,40 @@ func (p Pin) Set(value bool) {
 func (p Pin) Get() bool {
 	return p.get()
 }
+
+// Interrupts. Type aliasing to allow
+type IRQCallback func(pin Pin, events uint32)
+
+// Interrupt callbacks limited to number of cores like pico-sdk
+var irqCallbacks [2]IRQCallback
+
+func (p Pin) IRQWithCallback(events uint32, enabled bool, callback IRQCallback) {
+	p.setIRQEnabled(events, enabled)
+	// Install IRQ handler
+	irqCallbacks[GetCoreNumber()] = callback
+
+}
+
+func (p Pin) setIRQEnabled(events uint32, enabled bool) {
+	// Separate mask/force/status per-core, so check which core called, and
+	// set the relevant IRQ controls.
+	var irqCtlBase *irqCtrl
+	switch GetCoreNumber() {
+	case 0:
+		irqCtlBase = &ioBank0.proc0IRQctrl
+	case 1:
+		irqCtlBase = &ioBank0.proc1IRQctrl
+	}
+	p.ackIRQEnabled(events, irqCtlBase)
+	enReg := irqCtlBase.intE[p/8]
+	events <<= 4 * (p % 8)
+	if enabled {
+		enReg.SetBits(events)
+	} else {
+		enReg.ClearBits(events)
+	}
+}
+
+func (p Pin) ackIRQEnabled(events uint32, base *irqCtrl) {
+	ioBank0.intR[p/8].Set(events << 4 * (uint32(p) % 8))
+}

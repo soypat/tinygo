@@ -40,3 +40,16 @@ func (osc *xoscType) init() {
 	for !osc.status.HasBits(rp.XOSC_STATUS_STABLE) {
 	}
 }
+
+func (xo *xoscType) setDormant(pin Pin, event uint32, enabled bool) {
+	// These are not in device/rp
+	const (
+		XOSC_DORMANT_VALUE_DORMANT = 0x636f6d61
+		XOSC_DORMANT_VALUE_WAKE    = 0x77616b65
+	)
+	// WARNING: This stops the xosc until woken up by an irq
+	xo.dormant.Set(XOSC_DORMANT_VALUE_DORMANT)
+	// Wait for it to become stable once woken up
+	for xo.status.Get()&rp.XOSC_STATUS_STABLE == 0 {
+	}
+}
