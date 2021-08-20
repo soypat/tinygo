@@ -208,3 +208,19 @@ func (p Pin) setIRQEnabled(events uint32, enabled bool) {
 func (p Pin) ackIRQEnabled(events uint32, base *irqCtrl) {
 	ioBank0.intR[p/8].Set(events << 4 * (uint32(p) % 8))
 }
+
+func (p Pin) SetDormantIRQ(events uint32, enabled bool) {
+	base := &ioBank0.dormantWakeIRQctrl
+	p.ctrlSetIRQ(events, enabled, base)
+}
+
+func (p Pin) ctrlSetIRQ(events uint32, enabled bool, base *irqCtrl) {
+	p.ackIRQEnabled(events, base)
+	enReg := base.intE[p/8]
+	events <<= 4 * (p % 8)
+	if enabled {
+		enReg.SetBits(events)
+	} else {
+		enReg.ClearBits(events)
+	}
+}
