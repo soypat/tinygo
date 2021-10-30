@@ -212,11 +212,15 @@ func (p Pin) Get() bool {
 	return p.get()
 }
 
+// PinChange represents one or more trigger events that can happen on a given GPIO pin
+// on the RP2040. ORed PinChanges are valid input to most IRQ functions.
 type PinChange uint8
 
 // Pin change interrupt constants for SetInterrupt.
 const (
-	PinLevelLow PinChange = iota
+	// PinLevelLow triggers whenever pin is at a low (around 0V) logic level.
+	PinLevelLow PinChange = 1 << iota
+	// PinLevelLow triggers whenever pin is at a high (around 3V) logic level.
 	PinLevelHigh
 	// Edge falling
 	PinFalling
@@ -226,7 +230,7 @@ const (
 
 // Callbacks to be called for pins configured with SetInterrupt.
 var (
-	pinCallbacks [32]func(Pin)
+	pinCallbacks [2]func(Pin)
 	setInt       [2]bool
 )
 
@@ -241,92 +245,72 @@ func (p Pin) SetInterrupt(change PinChange, callback func(Pin)) error {
 	if p > 31 || p < 0 {
 		return ErrInvalidInputPin
 	}
+	core := CurrentCore()
 	if callback == nil {
 		// disable current interrupt
 		p.setInterrupt(change, false)
-		pinCallbacks[p] = nil
+		pinCallbacks[core] = nil
 		return nil
 	}
 
-	if pinCallbacks[p] != nil {
+	if pinCallbacks[core] != nil {
 		// Callback already configured. Should disable callback by passing a nil callback first.
 		return ErrNoPinChangeChannel
 	}
-	pinCallbacks[p] = callback
-	printIrqReg(defIrq)
-	println("set int")
 	p.setInterrupt(change, true)
-	printIrqReg(defIrq)
-	core := CurrentCore()
+	pinCallbacks[core] = callback
+
 	if setInt[core] {
 		// interrupt has already been set. Exit.
 		println("core set")
 		return nil
 	}
-	var base *irqCtrl
-	var intr interrupt.Interrupt
-	switch core {
-	case 0:
-		base = &ioBank0.proc0IRQctrl
-		intr = interrupt.New(rp.IRQ_SIO_IRQ_PROC0, gpioHandleInterrupt)
-		// arm.NVIC.ICPR[0].Set(1 << rp.IRQ_SIO_IRQ_PROC0)
-	case 1:
-		base = &ioBank0.proc0IRQctrl
-		intr = interrupt.New(rp.IRQ_SIO_IRQ_PROC1, gpioHandleInterrupt)
-	}
-	p.ctrlSetInterrupt(change, true, base)
-	intr.Enable()
-	setInt[core] = true
-	printIrqReg(defIrq)
+	interrupt.New(rp.IRQ_IO_IRQ_BANK0, gpioHandleInterrupt).Enable()
+	irqSet(rp.IRQ_IO_IRQ_BANK0, true)
 	return nil
 }
 
 // gpioHandleInterrupt finds the corresponding pin for the interrupt.
+// C SDK equivalent of gpio_irq_handler
 func gpioHandleInterrupt(intr interrupt.Interrupt) {
+	// panic("END") // if program is not ended here rp2040 will call interrupt again when finished, a vicious spin cycle.
+	var base *irqCtrl
+	core := CurrentCore()
+	switch core {
+	case 0:
+		base = &ioBank0.proc0IRQctrl
+	case 1:
+		base = &ioBank0.proc1IRQctrl
+	}
+	callback := pinCallbacks[core]
+	if callback != nil {
+		callback(0)
+	}
+	var gpio Pin
+	for gpio = 0; gpio < _NUMBANK0_GPIOS; gpio++ {
+		gpio.acknowledgeInterrupt(0xff) // TODO fix status get. For now we acknowledge all pending interrupts.
+		continue
+		statreg := base.intS[gpio>>3]
+		change := getIntChange(gpio, statreg.Get())
+		if change != 0 {
+			gpio.acknowledgeInterrupt(change)
+			if callback != nil {
+				callback(gpio)
+				return
+			} else {
+				panic("unset callback in handler")
+			}
+		}
+	}
 	println("gpioHandle")
 	printIrqReg(defIrq)
-	panic("END") // if program is not ended here rp2040 will call interrupt again when finished, a vicious spin cycle.
-	var i uint
-	var flags uint32
-	var irq *irqCtrl
-	switch CurrentCore() {
-	case 0:
-		irq = &ioBank0.proc0IRQctrl
-	case 1:
-		irq = &ioBank0.proc1IRQctrl
-	}
-	// first acquire which interrupt has been triggered.
-	for i = 0; i < 4; i++ {
-		flags = irq.intS[i].Get()
-		if flags != 0 {
-			break
-		}
-	}
-	if flags == 0 {
-		println("no intr flag found")
-		return
-	}
-	bank := i
-	println("bank", bank)
-	for i = 0; i < 32; i++ {
-		// iterate over bits and execute corresponding pin interrupt.
-		if flags*(1<<i) != 0 {
-			println("found", i)
-			// let it print
-
-			pin := Pin(bank*8 + i/4)
-			pinCallbacks[pin](Pin(pin))
-			pin.acknowledgeInterrupt(1 << i % 4)
-		} else {
-			println("nop", i) //
-		}
-	}
 }
 
 const defIrq = 0
 
 // Prints registers relevant to interrupts. REMOVE BEFORE RELEASE.
 func printIrqReg(i uint) {
+	println("currentCore:", CurrentCore())
 	bnk := &ioBank0.proc0IRQctrl
 	println("inte:", bnk.intE[i].Get())
 	println("ints:", bnk.intS[i].Get())
@@ -398,11 +382,16 @@ func (p Pin) setInterrupt(change PinChange, enabled bool) {
 
 // events returns the bit representation of the pin change for the rp2040.
 func (change PinChange) events() uint32 {
-	return 1 << change
+	return uint32(change)
 }
 
 // intBit is the bit storage form of a PinChange for a given Pin
 // in the IO_BANK0 interrupt registers (page 269 RP2040 Datasheet).
 func (p Pin) ioIntBit(change PinChange) uint32 {
 	return change.events() << (4 * (p % 8))
+}
+
+// Acquire interrupt data from a INT status register.
+func getIntChange(p Pin, status uint32) PinChange {
+	return PinChange(status>>(4*(p%8))) & 0xf
 }
