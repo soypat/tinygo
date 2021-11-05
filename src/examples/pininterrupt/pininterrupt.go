@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	button = machine.BUTTON
+	button = buttonPin
 	led    = machine.LED
 )
 

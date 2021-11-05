@@ -1,12 +1,12 @@
-//go:build pca10040
-// +build pca10040
+//go:build rp2040
+// +build rp2040
 
 package main
 
 import "machine"
 
 const (
-	buttonPin       = machine.BUTTON
+	buttonPin       = machine.GPIO5 // GP5 on Pico and D10 on Nano-RP2040
 	buttonMode      = machine.PinInputPullup
 	buttonPinChange = machine.PinRising
 )
