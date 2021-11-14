@@ -1,3 +1,4 @@
+//go:build rp2040
 // +build rp2040
 
 package machine
@@ -71,15 +72,17 @@ var (
 //  i2c.Tx(addr, w, nil)
 // Performs only a write transfer.
 func (i2c *I2C) Tx(addr uint16, w, r []byte) error {
-	// timeout in microseconds.
-	const timeout = 40 * 1000 // 40ms is a reasonable time for a real-time system.
+	// 40ms is a reasonable time for a real-time system.
+	const timeout = 40 * 1000
+	// Issue no-stop condition on write if there is a requested read operation.
+	isReadOp := len(r) > 0
 	if len(w) > 0 {
-		if err := i2c.tx(uint8(addr), w, false, timeout); nil != err {
+		if err := i2c.tx(uint8(addr), w, isReadOp, timeout); nil != err {
 			return err
 		}
 	}
 
-	if len(r) > 0 {
+	if isReadOp {
 		if err := i2c.rx(uint8(addr), r, false, timeout); nil != err {
 			return err
 		}
@@ -120,7 +123,6 @@ func (i2c *I2C) Configure(config I2CConfig) error {
 // enabling the I2C hardware if disabled beforehand.
 //go:inline
 func (i2c *I2C) SetBaudRate(br uint32) error {
-
 	if br == 0 {
 		return ErrInvalidI2CBaudrate
 	}
@@ -240,6 +242,8 @@ func (i2c *I2C) deinit() (resetVal uint32) {
 
 // tx is a primitive i2c blocking write to bus routine. timeout is time to wait
 // in microseconds since calling this function for write to finish.
+// If nostop=true, master retains control of the bus at the end of the transfer (no Stop is issued),
+// and the next transfer will begin with a Restart rather than a Start.
 func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout uint64) (err error) {
 	deadline := ticks() + timeout
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
@@ -340,6 +344,8 @@ func (i2c *I2C) tx(addr uint8, tx []byte, nostop bool, timeout uint64) (err erro
 
 // rx is a primitive i2c blocking read routine. timeout is time to wait
 // in microseconds since calling this function for read to finish.
+// If nostop=true, master retains control of the bus at the end of the transfer (no Stop is issued),
+// and the next transfer will begin with a Restart rather than a Start.
 func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, timeout uint64) (err error) {
 	deadline := ticks() + timeout
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
@@ -370,7 +376,7 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, timeout uint64) (err erro
 				boolToBit(last && !nostop)<<rp.I2C0_IC_DATA_CMD_STOP_Pos |
 				rp.I2C0_IC_DATA_CMD_CMD) // -> 1 for read
 
-		for !abort && i2c.readAvailable() == 0 {
+		for {
 			abortReason = i2c.getAbortReason()
 			i2c.clearAbortReason()
 			if abortReason != 0 {
@@ -379,6 +385,10 @@ func (i2c *I2C) rx(addr uint8, rx []byte, nostop bool, timeout uint64) (err erro
 			if ticks() > deadline {
 				i2c.restartOnNext = nostop
 				return errI2CReadTimeout // If there was a timeout, don't attempt to do anything else.
+			}
+			if abort || i2c.readAvailable() != 0 { // do { } while ( ) translation to Go.
+				// Abort encountered or readable data available.
+				break
 			}
 		}
 		if abort {
